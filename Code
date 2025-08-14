@@ -1,0 +1,104 @@
+import cv2
+import numpy as np
+
+vidcap = cv2.VideoCapture("test8.mp4")
+
+def nothing(x):
+    pass
+
+cv2.namedWindow("Trackbars")
+cv2.createTrackbar("L - H", "Trackbars", 0, 255, nothing)
+cv2.createTrackbar("L - S", "Trackbars", 0, 255, nothing)
+cv2.createTrackbar("L - V", "Trackbars", 200, 255, nothing)
+cv2.createTrackbar("U - H", "Trackbars", 255, 255, nothing)
+cv2.createTrackbar("U - S", "Trackbars", 50, 255, nothing)
+cv2.createTrackbar("U - V", "Trackbars", 255, 255, nothing)
+
+while True:
+    success, image = vidcap.read()
+    if not success:
+        break  # Stop if video ends
+
+    frame = cv2.resize(image, (640, 480))
+
+    ## Perspective points
+    tl = (222, 387)
+    bl = (70, 472)
+    tr = (400, 380)
+    br = (538, 472)
+
+    for pt in [tl, bl, tr, br]:
+        cv2.circle(frame, pt, 5, (0, 0, 255), -1)
+
+    ## Perspective transformation
+    pts1 = np.float32([tl, bl, tr, br])
+    pts2 = np.float32([[0, 0], [0, 480], [640, 0], [640, 480]])
+    matrix = cv2.getPerspectiveTransform(pts1, pts2)
+    transformed_frame = cv2.warpPerspective(frame, matrix, (640, 480))
+
+    ### HSV Threshold
+    hsv = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2HSV)
+    l_h = cv2.getTrackbarPos("L - H", "Trackbars")
+    l_s = cv2.getTrackbarPos("L - S", "Trackbars")
+    l_v = cv2.getTrackbarPos("L - V", "Trackbars")
+    u_h = cv2.getTrackbarPos("U - H", "Trackbars")
+    u_s = cv2.getTrackbarPos("U - S", "Trackbars")
+    u_v = cv2.getTrackbarPos("U - V", "Trackbars")
+
+    lower = np.array([l_h, l_s, l_v])
+    upper = np.array([u_h, u_s, u_v])
+    mask = cv2.inRange(hsv, lower, upper)
+
+    # Histogram
+    histogram = np.sum(mask[mask.shape[0] // 2:, :], axis=0)
+    midpoint = histogram.shape[0] // 2
+    left_base = np.argmax(histogram[:midpoint])
+    right_base = np.argmax(histogram[midpoint:]) + midpoint
+
+    # Sliding Window
+    y = 472
+    lx, rx = [], []
+    msk = mask.copy()
+
+    while y > 0:
+        # Bound check
+        l_x1, l_x2 = max(left_base - 50, 0), min(left_base + 50, mask.shape[1])
+        r_x1, r_x2 = max(right_base - 50, 0), min(right_base + 50, mask.shape[1])
+        y1, y2 = max(y - 40, 0), y
+
+        # Left
+        img = mask[y1:y2, l_x1:l_x2]
+        contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                lx.append(l_x1 + cx)
+                left_base = l_x1 + cx
+
+        # Right
+        img = mask[y1:y2, r_x1:r_x2]
+        contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                rx.append(r_x1 + cx)
+                right_base = r_x1 + cx
+
+        # Draw windows
+        cv2.rectangle(msk, (l_x1, y2), (l_x2, y1), (255, 255, 255), 2)
+        cv2.rectangle(msk, (r_x1, y2), (r_x2, y1), (255, 255, 255), 2)
+
+        y -= 40
+
+    cv2.imshow("Original", frame)
+    cv2.imshow("Bird's Eye View", transformed_frame)
+    cv2.imshow("Lane Detection - Mask", mask)
+    cv2.imshow("Lane Detection - Sliding Windows", msk)
+
+    if cv2.waitKey(10) & 0xFF == 27:
+        break
+
+vidcap.release()
+cv2.destroyAllWindows()
